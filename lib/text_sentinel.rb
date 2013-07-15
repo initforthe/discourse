@@ -33,11 +33,22 @@ class TextSentinel
   end
 
   def valid?
-    @text.present? &&
-    seems_meaningful? &&
-    seems_pronounceable? &&
-    seems_unpretentious? &&
-    seems_quiet?
+    validity = {
+      is_present: @text.present?,
+      is_meaningful: seems_meaningful?,
+      is_pronounceable: seems_pronounceable?,
+      is_unpretentious: seems_unpretentious?,
+      is_quiet: seems_quiet?
+    }
+    output = @text.present? &&
+      seems_meaningful? &&
+      seems_pronounceable? &&
+      seems_unpretentious? &&
+      seems_quiet?
+    unless output
+      puts "Failed validation: #{validity.inspect}"
+    end
+    output
   end
 
   private
