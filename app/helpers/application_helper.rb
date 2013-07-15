@@ -78,6 +78,10 @@ module ApplicationHelper
       end
     end
 
+    # Add workaround tag for old crawlers which ignores <noscript>
+    # (see https://developers.google.com/webmasters/ajax-crawling/docs/specification)
+    result << tag('meta', name: "fragment", content: "!") if SiteSetting.enable_escaped_fragments
+
     result
   end
 
@@ -85,8 +89,12 @@ module ApplicationHelper
   # will be rendered instead.
   def markdown_content(key, replacements=nil)
     result = PrettyText.cook(SiteContent.content_for(key, replacements || {})).html_safe
-    result = yield if result.blank? && block_given?
-    result
+    if result.blank? && block_given?
+      yield
+      nil
+    else
+      result
+    end
   end
 
   def login_path

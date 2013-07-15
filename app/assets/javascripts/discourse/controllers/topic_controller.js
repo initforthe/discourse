@@ -19,7 +19,7 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
   }.property('postStream.filteredPostsCount', 'progressPosition'),
 
   jumpBottomDisabled: function() {
-    return this.get('progressPosition') === this.get('postStream.filteredPostsCount');
+    return this.get('progressPosition') >= this.get('postStream.filteredPostsCount');
   }.property('postStream.filteredPostsCount', 'progressPosition'),
 
   canMergeTopic: function() {
@@ -60,6 +60,14 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
     return canDelete;
   }.property('selectedPostsCount'),
 
+  hasError: Ember.computed.or('errorBodyHtml', 'message'),
+
+  streamPercentage: function() {
+    if (!this.get('postStream.loaded')) { return 0; }
+    if (this.get('postStream.filteredPostsCount') === 0) { return 0; }
+    return this.get('progressPosition') / this.get('postStream.filteredPostsCount');
+  }.property('postStream.loaded', 'progressPosition', 'postStream.filteredPostsCount'),
+
   multiSelectChanged: function() {
     // Deselect all posts when multi select is turned off
     if (!this.get('multiSelect')) {
@@ -90,7 +98,7 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
   },
 
   selectAll: function() {
-    var posts = this.get('posts');
+    var posts = this.get('postStream.posts');
     var selectedPosts = this.get('selectedPosts');
     if (posts) {
       selectedPosts.addObjects(posts);
@@ -143,10 +151,11 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
       // save the modifications
       topic.save().then(function(result){
         // update the title if it has been changed (cleaned up) server-side
-        var title = result.basic_topic.fancy_title;
+        var title       = result.basic_topic.title;
+        var fancy_title = result.basic_topic.fancy_title;
         topic.setProperties({
           title: title,
-          fancy_title: title
+          fancy_title: fancy_title
         });
 
       }, function(error) {
@@ -154,7 +163,7 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
         if (error && error.responseText) {
           bootbox.alert($.parseJSON(error.responseText).errors[0]);
         } else {
-          bootbox.alert(Em.String.i18n('generic_error'));
+          bootbox.alert(I18n.t('generic_error'));
         }
       });
 
@@ -165,7 +174,7 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
 
   deleteSelected: function() {
     var topicController = this;
-    bootbox.confirm(Em.String.i18n("post.delete.confirm", { count: this.get('selectedPostsCount')}), function(result) {
+    bootbox.confirm(I18n.t("post.delete.confirm", { count: this.get('selectedPostsCount')}), function(result) {
       if (result) {
 
         // If all posts are selected, it's the same thing as deleting the topic
@@ -189,8 +198,6 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
     Discourse.URL.routeTo(this.get('lastPostUrl'));
   },
 
-
-
   replyAsNewTopic: function(post) {
     // TODO shut down topic draft cleanly if it exists ...
     var composerController = this.get('controllers.composer');
@@ -203,7 +210,7 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
 
     promise.then(function() {
       Discourse.Post.loadQuote(post.get('id')).then(function(q) {
-        composerController.appendText("" + (Em.String.i18n("post.continue_discussion", {
+        composerController.appendText("" + (I18n.t("post.continue_discussion", {
           postLink: postLink
         })) + "\n\n" + q);
       });
@@ -240,12 +247,23 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
     return Discourse.User.current() && !this.get('isPrivateMessage');
   }.property('isPrivateMessage'),
 
+  recoverTopic: function() {
+    this.get('content').recover();
+  },
+
   deleteTopic: function() {
-    var topicController = this;
     this.unsubscribe();
-    this.get('content').destroy().then(function() {
-      topicController.set('message', Em.String.i18n('topic.deleted'));
-      topicController.set('loaded', false);
+    this.get('content').destroy(Discourse.User.current());
+  },
+
+  resetRead: function() {
+    Discourse.ScreenTrack.instance().reset();
+    this.unsubscribe();
+
+    var topicController = this;
+    this.get('model').resetRead().then(function() {
+      topicController.set('message', I18n.t("topic.read_position_reset"));
+      topicController.set('postStream.loaded', false);
     });
   },
 
@@ -349,7 +367,7 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
 
   toggleBookmark: function(post) {
     if (!Discourse.User.current()) {
-      alert(Em.String.i18n("bookmarks.not_bookmarked"));
+      alert(I18n.t("bookmarks.not_bookmarked"));
       return;
     }
     post.toggleProperty('bookmarked');
@@ -366,20 +384,11 @@ Discourse.TopicController = Discourse.ObjectController.extend(Discourse.Selected
   },
 
   recoverPost: function(post) {
-    post.set('deleted_at', null);
     post.recover();
   },
 
   deletePost: function(post) {
-    // Moderators can delete posts. Regular users can only create a deleted at message.
-    if (Discourse.User.current('staff')) {
-      post.set('deleted_at', new Date());
-    } else {
-      post.set('cooked', Discourse.Markdown.cook(Em.String.i18n("post.deleted_by_author")));
-      post.set('can_delete', false);
-      post.set('version', post.get('version') + 1);
-    }
-    post.destroy();
+    post.destroy(Discourse.User.current());
   },
 
   removeAllowedUser: function(username) {

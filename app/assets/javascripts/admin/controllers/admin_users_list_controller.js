@@ -49,7 +49,7 @@ Discourse.AdminUsersListController = Ember.ArrayController.extend(Discourse.Pres
     @property title
   **/
   title: function() {
-    return Em.String.i18n('admin.users.titles.' + this.get('query'));
+    return I18n.t('admin.users.titles.' + this.get('query'));
   }.property('query'),
 
   /**
@@ -78,9 +78,7 @@ Discourse.AdminUsersListController = Ember.ArrayController.extend(Discourse.Pres
 
     @property hasSelection
   **/
-  hasSelection: function() {
-    return this.get('selectedCount') > 0;
-  }.property('selectedCount'),
+  hasSelection: Em.computed.gt('selectedCount', 0),
 
   /**
     Refresh the current list of users.

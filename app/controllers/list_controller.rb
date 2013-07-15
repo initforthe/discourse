@@ -1,6 +1,6 @@
 class ListController < ApplicationController
 
-  before_filter :ensure_logged_in, except: [:latest, :hot, :category, :category_feed]
+  before_filter :ensure_logged_in, except: [:latest, :hot, :category, :category_feed, :latest_feed, :hot_feed]
   before_filter :set_category, only: [:category, :category_feed]
   skip_before_filter :check_xhr
 
@@ -15,6 +15,19 @@ class ListController < ApplicationController
     end
   end
 
+  [:latest, :hot].each do |filter|
+    define_method("#{filter}_feed") do
+      anonymous_etag(@category) do
+        @title = "#{filter.capitalize} Topics"
+        @link = "#{Discourse.base_url}/#{filter}"
+        @description = I18n.t("rss_description.#{filter}")
+        @atom_link = "#{Discourse.base_url}/#{filter}.rss"
+        @topic_list = TopicQuery.new(current_user).public_send("list_#{filter}")
+        render 'list', formats: [:rss]
+      end
+    end
+  end
+
   def category
     query = TopicQuery.new(current_user, page: params[:page])
 
@@ -22,6 +35,10 @@ class ListController < ApplicationController
     if request_is_for_uncategorized?
       list = query.list_uncategorized
     else
+      if !@category
+        raise Discourse::NotFound
+        return
+      end
       guardian.ensure_can_see!(@category)
       list = query.list_category(@category)
     end
@@ -36,6 +53,10 @@ class ListController < ApplicationController
     guardian.ensure_can_see!(@category)
 
     anonymous_etag(@category) do
+      @title = @category.name
+      @link = "#{Discourse.base_url}/category/#{@category.slug}"
+      @description = "#{I18n.t('topics_in_category', category: @category.name)} #{@category.description}"
+      @atom_link = "#{Discourse.base_url}/category/#{@category.slug}.rss"
       @topic_list = TopicQuery.new.list_new_in_category(@category)
       render 'list', formats: [:rss]
     end

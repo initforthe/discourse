@@ -54,6 +54,19 @@ test('appending posts', function() {
   ok(postStream.get('lastPostLoaded'), "the last post is still the last post in the new stream");
 });
 
+test('closestPostNumberFor', function() {
+  var postStream = buildStream(1231);
+
+  blank(postStream.closestPostNumberFor(1), "there is no closest post when nothing is loaded");
+
+  postStream.appendPost(Discourse.Post.create({id: 1, post_number: 2}));
+  postStream.appendPost(Discourse.Post.create({id: 2, post_number: 3}));
+
+  equal(postStream.closestPostNumberFor(2), 2, "If a post is in the stream it returns its post number");
+  equal(postStream.closestPostNumberFor(3), 3, "If a post is in the stream it returns its post number");
+  equal(postStream.closestPostNumberFor(10), 3, "it clips to the upper bound of the stream");
+  equal(postStream.closestPostNumberFor(0), 2, "it clips to the lower bound of the stream");
+});
 
 test('updateFromJson', function() {
   var postStream = buildStream(1231);
@@ -242,7 +255,8 @@ test("staging and undoing a new post", function() {
   });
 
   // Stage the new post in the stream
-  postStream.stagePost(stagedPost, user);
+  var result = postStream.stagePost(stagedPost, user);
+  equal(result, true, "it returns true");
   equal(topic.get('highest_post_number'), 2, "it updates the highest_post_number");
   ok(postStream.get('loading'), "it is loading while the post is being staged");
 
@@ -277,10 +291,14 @@ test("staging and committing a post", function() {
   topic.set('posts_count', 1);
 
   // Stage the new post in the stream
-  postStream.stagePost(stagedPost, user);
+  var result = postStream.stagePost(stagedPost, user);
+  equal(result, true, "it returns true");
   ok(postStream.get('loading'), "it is loading while the post is being staged");
   stagedPost.setProperties({ id: 1234, raw: "different raw value" });
   equal(postStream.get('filteredPostsCount'), 1, "it retains the filteredPostsCount");
+
+  result = postStream.stagePost(stagedPost, user);
+  equal(result, false, "you can't stage a post while it is currently staging");
 
   postStream.commitPost(stagedPost);
   ok(postStream.get('posts').contains(stagedPost), "the post is still in the stream");

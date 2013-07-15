@@ -7,7 +7,7 @@ require_dependency 'text_cleaner'
 require_dependency 'trashable'
 
 class Topic < ActiveRecord::Base
-  include ActionView::Helpers
+  include ActionView::Helpers::SanitizeHelper
   include RateLimiter::OnCreateRecord
   include Trashable
 
@@ -21,12 +21,14 @@ class Topic < ActiveRecord::Base
 
   versioned if: :new_version_required?
 
-  def trash!
-    super
+  def trash!(trashed_by=nil)
+    update_category_topic_count_by(-1) if deleted_at.nil?
+    super(trashed_by)
     update_flagged_posts_count
   end
 
   def recover!
+    update_category_topic_count_by(1) unless deleted_at.nil?
     super
     update_flagged_posts_count
   end
@@ -89,9 +91,9 @@ class Topic < ActiveRecord::Base
 
   scope :listable_topics, lambda { where('topics.archetype <> ?', [Archetype.private_message]) }
 
-  scope :by_newest, order('topics.created_at desc, topics.id desc')
+  scope :by_newest, -> { order('topics.created_at desc, topics.id desc') }
 
-  scope :visible, where(visible: true)
+  scope :visible, -> { where(visible: true) }
 
   scope :created_since, lambda { |time_ago| where('created_at > ?', time_ago) }
 
@@ -138,7 +140,7 @@ class Topic < ActiveRecord::Base
 
   before_save do
     if (auto_close_at_changed? and !auto_close_at_was.nil?) or (auto_close_user_id_changed? and auto_close_at)
-      self.auto_close_started_at ||= Time.zone.now
+      self.auto_close_started_at ||= Time.zone.now if auto_close_at
       Jobs.cancel_scheduled_job(:close_topic, {topic_id: id})
       true
     end
@@ -311,14 +313,14 @@ class Topic < ActiveRecord::Base
       old_category = category
 
       if category_id.present? && category_id != cat.id
-        Category.update_all 'topic_count = topic_count - 1', ['id = ?', category_id]
+        Category.where(['id = ?', category_id]).update_all 'topic_count = topic_count - 1'
       end
 
       self.category_id = cat.id
       save
 
       CategoryFeaturedTopic.feature_topics_for(old_category)
-      Category.update_all 'topic_count = topic_count + 1', id: cat.id
+      Category.where(id: cat.id).update_all 'topic_count = topic_count + 1'
       CategoryFeaturedTopic.feature_topics_for(cat) unless old_category.try(:id) == cat.try(:id)
     end
   end
@@ -354,7 +356,7 @@ class Topic < ActiveRecord::Base
     if name.blank?
       if category_id.present?
         CategoryFeaturedTopic.feature_topics_for(category)
-        Category.update_all 'topic_count = topic_count - 1', id: category_id
+        Category.where(id: category_id).update_all 'topic_count = topic_count - 1'
       end
       self.category_id = nil
       save
@@ -630,6 +632,14 @@ class Topic < ActiveRecord::Base
   def secure_category?
     category && category.secure
   end
+
+  private
+
+    def update_category_topic_count_by(num)
+      if category_id.present?
+        Category.where(['id = ?', category_id]).update_all("topic_count = topic_count " + (num > 0 ? '+' : '') + "#{num}")
+      end
+    end
 end
 
 # == Schema Information

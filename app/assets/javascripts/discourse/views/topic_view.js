@@ -9,30 +9,29 @@
 **/
 Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
   templateName: 'topic',
-  topicBinding: 'controller.content',
+  topicBinding: 'controller.model',
   userFiltersBinding: 'controller.userFilters',
-  classNameBindings: ['controller.multiSelect:multi-select', 'topic.archetype', 'topic.category.secure:secure_category'],
+  classNameBindings: ['controller.multiSelect:multi-select',
+                      'topic.archetype',
+                      'topic.category.secure:secure_category',
+                      'topic.deleted:deleted-topic'],
   menuVisible: true,
   SHORT_POST: 1200,
 
   postStream: Em.computed.alias('controller.postStream'),
 
   updateBar: function() {
-    if (!this.get('postStream.loaded')) return;
-
     var $topicProgress = $('#topic-progress');
     if (!$topicProgress.length) return;
 
-    var ratio = this.get('controller.progressPosition') / this.get('postStream.filteredPostsCount');
     var totalWidth = $topicProgress.width();
-    var progressWidth = ratio * totalWidth;
-    var bg = $topicProgress.find('.bg');
-    var currentWidth = bg.width();
+    var progressWidth = this.get('controller.streamPercentage') * totalWidth;
 
-    bg.css("border-right-width", (progressWidth === totalWidth) ? "0px" : "1px")
-      .width(progressWidth);
+    $topicProgress.find('.bg')
+                  .css("border-right-width", (progressWidth === totalWidth) ? "0px" : "1px")
+                  .width(progressWidth);
 
-  }.observes('controller.progressPosition', 'postStream.filteredPostsCount', 'topic.loaded'),
+  }.observes('controller.streamPercentage'),
 
   updateTitle: function() {
     var title = this.get('topic.title');
@@ -51,6 +50,22 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
 
     var postUrl = topic.get('url');
     if (current > 1) { postUrl += "/" + current; }
+    // TODO: @Robin, this should all be integrated into the router,
+    //  the view should not be performing routing work
+    //
+    //  This workaround ensures the router is aware the route changed,
+    //    without it, the up button was broken on long topics.
+    //  To repro, go to a topic with 50 posts, go to first post,
+    //    scroll to end, click up button ... nothing happens
+    var handler =_.first(
+          _.where(Discourse.URL.get("router.router.currentHandlerInfos"),
+              function(o) {
+                return o.name === "topic.fromParams";
+              })
+          );
+    if(handler){
+      handler.context = {nearPost: current};
+    }
     Discourse.URL.replaceState(postUrl);
   }.observes('controller.currentPost', 'highest_post_number'),
 
@@ -59,6 +74,27 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
     composerController.clearState();
     composerController.set('topic', this.get('topic'));
   }.observes('composer'),
+
+  enteredTopic: function() {
+    if (this.present('controller.enteredAt')) {
+      var topicView = this;
+      Em.run.schedule('afterRender', function() {
+        topicView.updateBar();
+        topicView.updatePosition();
+      });
+    }
+  }.observes('controller.enteredAt'),
+
+  didInsertElement: function(e) {
+    this.bindScrolling({debounce: 0});
+
+    var topicView = this;
+    $(window).bind('resize.discourse-on-scroll', function() { topicView.updatePosition(); });
+
+    this.$().on('mouseup.discourse-redirect', '.cooked a, a.track-link', function(e) {
+      return Discourse.ClickTrack.trackClick(e);
+    });
+  },
 
   // This view is being removed. Shut down operations
   willDestroyElement: function() {
@@ -73,19 +109,6 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
 
     // this happens after route exit, stuff could have trickled in
     this.set('controller.controllers.header.showExtraInfo', false);
-  },
-
-  didInsertElement: function(e) {
-    this.bindScrolling({debounce: 0});
-
-    var topicView = this;
-    $(window).bind('resize.discourse-on-scroll', function() { topicView.updatePosition(); });
-
-    this.$().on('mouseup.discourse-redirect', '.cooked a, a.track-link', function(e) {
-      return Discourse.ClickTrack.trackClick(e);
-    });
-
-    this.updatePosition();
   },
 
   debounceLoadSuggested: Discourse.debounce(function(){
@@ -119,17 +142,6 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
     this.debounceLoadSuggested();
   }.observes('topicTrackingState.incomingCount'),
 
-  resetRead: function(e) {
-    Discourse.ScreenTrack.instance().reset();
-    this.get('controller').unsubscribe();
-
-    var topicView = this;
-    this.get('topic').resetRead().then(function() {
-      topicView.set('controller.message', Em.String.i18n("topic.read_position_reset"));
-      topicView.set('controller.loaded', false);
-    });
-  },
-
   gotFocus: function(){
     if (Discourse.get('hasFocus')){
       this.scrolled();
@@ -151,8 +163,8 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
 
     if (post) {
       var postNumber = post.get('post_number');
-      if (postNumber > (this.get('last_read_post_number') || 0)) {
-        this.set('last_read_post_number', postNumber);
+      if (postNumber > (this.get('controller.last_read_post_number') || 0)) {
+        this.set('controller.last_read_post_number', postNumber);
       }
       if (!post.get('read')) {
         post.set('read', true);
@@ -169,6 +181,7 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
     if (!postView) return;
     var post = postView.get('post');
     if (!post) return;
+
     this.set('controller.progressPosition', this.get('postStream').indexOf(post) + 1);
   },
 
@@ -184,9 +197,14 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
     this.updatePosition();
   },
 
-  updatePosition: function() {
-    var topic = this.get('controller.model');
 
+  /**
+    Process the posts the current user has seen in the topic.
+
+    @private
+    @method processSeenPosts
+  **/
+  processSeenPosts: function() {
     var rows = $('.topic-post.ready');
     if (!rows || rows.length === 0) { return; }
 
@@ -235,6 +253,15 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
     } else {
       console.error("can't update position ");
     }
+  },
+
+  /**
+    The user has scrolled the window, or it is finished rendering and ready for processing.
+
+    @method updatePosition
+  **/
+  updatePosition: function() {
+    this.processSeenPosts();
 
     var offset = window.pageYOffset || $('html').scrollTop();
     if (!this.get('docAt')) {
@@ -244,7 +271,8 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
       }
     }
 
-    var headerController = this.get('controller.controllers.header');
+    var headerController = this.get('controller.controllers.header'),
+        topic = this.get('controller.model');
     if (this.get('docAt')) {
       headerController.set('showExtraInfo', offset >= this.get('docAt') || topic.get('postStream.firstPostNotLoaded'));
     } else {
@@ -254,7 +282,10 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
     // Dock the counter if necessary
     var $lastPost = $('article[data-post-id=' + topic.get('postStream.lastPostId') + "]");
     var lastPostOffset = $lastPost.offset();
-    if (!lastPostOffset) { return; }
+    if (!lastPostOffset) {
+      this.set('controller.dockedCounter', false);
+      return;
+    }
     this.set('controller.dockedCounter', (offset >= (lastPostOffset.top + $lastPost.height()) - $(window).height()));
   },
 
@@ -264,7 +295,7 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
 
   browseMoreMessage: function() {
     var opts = {
-      latestLink: "<a href=\"/\">" + (Em.String.i18n("topic.view_latest_topics")) + "</a>"
+      latestLink: "<a href=\"/\">" + (I18n.t("topic.view_latest_topics")) + "</a>"
     };
 
 
@@ -272,7 +303,7 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
     if (category) {
       opts.catLink = Discourse.Utilities.categoryLink(category);
     } else {
-      opts.catLink = "<a href=\"" + Discourse.getURL("/categories") + "\">" + (Em.String.i18n("topic.browse_all_categories")) + "</a>";
+      opts.catLink = "<a href=\"" + Discourse.getURL("/categories") + "\">" + (I18n.t("topic.browse_all_categories")) + "</a>";
     }
 
     var tracking = this.get('topicTrackingState');
@@ -293,9 +324,9 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
       });
     }
     else if (category) {
-      return Ember.String.i18n("topic.read_more_in_category", opts);
+      return I18n.t("topic.read_more_in_category", opts);
     } else {
-      return Ember.String.i18n("topic.read_more", opts);
+      return I18n.t("topic.read_more", opts);
     }
   }.property('topicTrackingState.messageCount')
 
@@ -304,30 +335,81 @@ Discourse.TopicView = Discourse.View.extend(Discourse.Scrolling, {
 Discourse.TopicView.reopenClass({
 
   // Scroll to a given post, if in the DOM. Returns whether it was in the DOM or not.
-  jumpToPost: function(topicId, postNumber) {
+  jumpToPost: function(topicId, postNumber, avoidScrollIfPossible) {
     Em.run.scheduleOnce('afterRender', function() {
+
+      var rows = $('.topic-post.ready');
 
       // Make sure we're looking at the topic we want to scroll to
       if (topicId !== parseInt($('#topic').data('topic-id'), 10)) { return false; }
 
       var $post = $("#post_" + postNumber);
       if ($post.length) {
-        if (postNumber === 1) {
-          $('html, body').scrollTop(0);
+
+        var postTop = $post.offset().top;
+        var highlight = true;
+
+        var header = $('header');
+        var title = $('#topic-title');
+        var expectedOffset = title.height() - header.find('.contents').height();
+
+        if (expectedOffset < 0) {
+          expectedOffset = 0;
+        }
+
+        var offset = (header.outerHeight(true) + expectedOffset);
+        var windowScrollTop = $('html, body').scrollTop();
+
+        if (avoidScrollIfPossible && postTop > windowScrollTop + offset && postTop < windowScrollTop + $(window).height() + 100) {
+          // in view
         } else {
-          var header = $('header');
-          var title = $('#topic-title');
-          var expectedOffset = title.height() - header.find('.contents').height();
+          // not in view ... bring into view
+          if (postNumber === 1) {
+            $(window).scrollTop(0);
+            highlight = false;
+          } else {
+            var desired = $post.offset().top - offset;
+            $(window).scrollTop(desired);
 
-          if (expectedOffset < 0) {
-            expectedOffset = 0;
+            // TODO @Robin, I am seeing multiple events in chrome issued after
+            // jumpToPost if I refresh a page, sometimes I see 2, sometimes 3
+            //
+            // 1. Where are they coming from?
+            // 2. On refresh we should only issue a single scrollTop
+            // 3. If you are scrolled down in BoingBoing desired sometimes is wrong
+            //      due to vanishing header, we should not be rendering it imho until after
+            //      we render the posts
+
+            var first = true;
+            var t = new Date();
+            // console.log("DESIRED:" + desired);
+            var enforceDesired = function(){
+              if($(window).scrollTop() !== desired) {
+                console.log("GOT EVENT " + $(window).scrollTop());
+                console.log("Time " + (new Date() - t));
+                console.trace();
+                if(first) {
+                  $(window).scrollTop(desired);
+                  first = false;
+                }
+                // $(document).unbind("scroll", enforceDesired);
+              }
+            };
+
+            // uncomment this line to help debug this issue.
+            // $(document).scroll(enforceDesired);
           }
+        }
 
-          $('html, body').scrollTop($post.offset().top - (header.outerHeight(true) + expectedOffset));
-
+        if(highlight) {
           var $contents = $('.topic-body .contents', $post);
-          var originalCol = $contents.css('backgroundColor');
-          $contents.css({ backgroundColor: "#ffffcc" }).animate({ backgroundColor: originalCol }, 2500);
+          var origColor = $contents.data('orig-color') || $contents.css('backgroundColor');
+
+          $contents.data("orig-color", origColor);
+          $contents
+            .css({ backgroundColor: "#ffffcc" })
+            .stop()
+            .animate({ backgroundColor: origColor }, 2500);
         }
       }
     });

@@ -16,6 +16,9 @@ Discourse.Topic = Discourse.Model.extend({
     return Discourse.TopicDetails.create({topic: this});
   }.property(),
 
+  invisible: Em.computed.not('visible'),
+  deleted: Em.computed.notEmpty('deleted_at'),
+
   canConvertToRegular: function() {
     var a = this.get('archetype');
     return a !== 'regular' && a !== 'private_message';
@@ -79,26 +82,6 @@ Discourse.Topic = Discourse.Model.extend({
     return this.urlForPostNumber(this.get('highest_post_number'));
   }.property('url', 'highest_post_number'),
 
-  // The last post in the topic
-  lastPost: function() {
-    var posts = this.get('posts');
-    return posts[posts.length-1];
-  },
-
-  postsChanged: function() {
-    var last, posts;
-    posts = this.get('posts');
-    last = posts[posts.length - 1];
-    if (!(last && last.set && !last.lastPost)) return;
-    _.each(posts,function(p) {
-      if (p.lastPost) {
-        p.set('lastPost', false);
-      }
-    });
-    last.set('lastPost', true);
-    return true;
-  }.observes('posts.@each', 'posts'),
-
   // The amount of new posts to display. It might be different than what the server
   // tells us if we are still asynchronously flushing our "recently read" data.
   // So take what the browser has seen into consideration.
@@ -149,10 +132,7 @@ Discourse.Topic = Discourse.Model.extend({
   archetypeObject: function() {
     return Discourse.Site.instance().get('archetypes').findProperty('id', this.get('archetype'));
   }.property('archetype'),
-
-  isPrivateMessage: (function() {
-    return this.get('archetype') === 'private_message';
-  }).property('archetype'),
+  isPrivateMessage: Em.computed.equal('archetype', 'private_message'),
 
   toggleStatus: function(property) {
     this.toggleProperty(property);
@@ -162,13 +142,13 @@ Discourse.Topic = Discourse.Model.extend({
     });
   },
 
-  favoriteTooltipKey: (function() {
+  favoriteTooltipKey: function() {
     return this.get('starred') ? 'favorite.help.unstar' : 'favorite.help.star';
-  }).property('starred'),
+  }.property('starred'),
 
-  favoriteTooltip: (function() {
-    return Em.String.i18n(this.get('favoriteTooltipKey'));
-  }).property('favoriteTooltipKey'),
+  favoriteTooltip: function() {
+    return I18n.t(this.get('favoriteTooltipKey'));
+  }.property('favoriteTooltipKey'),
 
   toggleStar: function() {
     var topic = this;
@@ -183,7 +163,7 @@ Discourse.Topic = Discourse.Model.extend({
       if (error && error.responseText) {
         bootbox.alert($.parseJSON(error.responseText).errors);
       } else {
-        bootbox.alert(Em.String.i18n('generic_error'));
+        bootbox.alert(I18n.t('generic_error'));
       }
     });
   },
@@ -201,22 +181,39 @@ Discourse.Topic = Discourse.Model.extend({
 
   // Reset our read data for this topic
   resetRead: function() {
-    return Discourse.ajax("/t/" + (this.get('id')) + "/timings", {
+    return Discourse.ajax("/t/" + this.get('id') + "/timings", {
       type: 'DELETE'
     });
   },
 
   // Invite a user to this topic
   inviteUser: function(user) {
-    return Discourse.ajax("/t/" + (this.get('id')) + "/invite", {
+    return Discourse.ajax("/t/" + this.get('id') + "/invite", {
       type: 'POST',
       data: { user: user }
     });
   },
 
   // Delete this topic
-  destroy: function() {
-    return Discourse.ajax("/t/" + (this.get('id')), { type: 'DELETE' });
+  destroy: function(deleted_by) {
+    this.setProperties({
+      deleted_at: new Date(),
+      deleted_by: deleted_by,
+      'details.can_delete': false,
+      'details.can_recover': true
+    });
+    return Discourse.ajax("/t/" + this.get('id'), { type: 'DELETE' });
+  },
+
+  // Recover this topic if deleted
+  recover: function(deleted_by) {
+    this.setProperties({
+      deleted_at: null,
+      deleted_by: null,
+      'details.can_delete': true,
+      'details.can_recover': false
+    });
+    return Discourse.ajax("/t/" + this.get('id') + "/recover", { type: 'PUT' });
   },
 
   // Update our attributes from a JSON result
@@ -240,7 +237,6 @@ Discourse.Topic = Discourse.Model.extend({
     @method clearPin
   **/
   clearPin: function() {
-
     var topic = this;
 
     // Clear the pin optimistically from the object
@@ -256,29 +252,27 @@ Discourse.Topic = Discourse.Model.extend({
 
   // Is the reply to a post directly below it?
   isReplyDirectlyBelow: function(post) {
-    var postBelow, posts;
-    posts = this.get('postStream.posts');
+    var posts = this.get('postStream.posts');
     if (!posts) return;
 
-    postBelow = posts[posts.indexOf(post) + 1];
+    var postBelow = posts[posts.indexOf(post) + 1];
 
     // If the post directly below's reply_to_post_number is our post number, it's
     // considered directly below.
     return postBelow && postBelow.get('reply_to_post_number') === post.get('post_number');
   },
 
-  hasExcerpt: function() {
-    return this.get('pinned') && this.get('excerpt') && this.get('excerpt').length > 0;
-  }.property('pinned', 'excerpt'),
+  excerptNotEmpty: Em.computed.notEmpty('excerpt'),
+  hasExcerpt: Em.computed.and('pinned', 'excerptNotEmpty'),
 
   excerptTruncated: function() {
     var e = this.get('excerpt');
     return( e && e.substr(e.length - 8,8) === '&hellip;' );
   }.property('excerpt'),
 
-  canClearPin: function() {
-    return this.get('pinned') && (this.get('last_read_post_number') === this.get('highest_post_number'));
-  }.property('pinned', 'last_read_post_number', 'highest_post_number')
+  readLastPost: Discourse.computed.propertyEqual('last_read_post_number', 'highest_post_number'),
+  canCleanPin: Em.computed.and('pinned', 'readLastPost')
+
 });
 
 Discourse.Topic.reopenClass({

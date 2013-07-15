@@ -56,7 +56,7 @@
     }
     &.category-description {
       td {
-        color: lighten($topic-list-td-color, 5%);
+        color: $nav-pills-border-color-active;
       }
     }
   }
@@ -177,6 +177,9 @@
     a:not(.badge-posts) {
       color: inherit;
     }
+  }
+  .likes {
+    width: 50px;
   }
   .activity {
     width: 50px;

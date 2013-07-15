@@ -121,6 +121,8 @@ class PostsController < ApplicationController
     post = find_post_from_params
     guardian.ensure_can_recover_post!(post)
     post.recover!
+    post.topic.update_statistics
+
     render nothing: true
   end
 
@@ -190,15 +192,15 @@ class PostsController < ApplicationController
 
     def create_params
       permitted = [
-          :raw,
-          :topic_id,
-          :title,
-          :archetype,
-          :category,
-          :target_usernames,
-          :reply_to_post_number,
-          :image_sizes,
-          :auto_close_days
+        :raw,
+        :topic_id,
+        :title,
+        :archetype,
+        :category,
+        :target_usernames,
+        :reply_to_post_number,
+        :image_sizes,
+        :auto_close_days
       ]
 
       if api_key_valid?
